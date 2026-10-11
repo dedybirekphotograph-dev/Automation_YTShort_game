@@ -1,0 +1,7 @@
+client_secret.json
+token.json
+state/
+output/
+*.mp4
+__pycache__/
+.env
