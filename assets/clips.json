@@ -1,0 +1,59 @@
+{
+  "clips": [
+    {
+      "id": "replace-with-unique-id-1",
+      "file": "assets/clips/approved_clip_1.mp4",
+      "streamer": "Streamer Name",
+      "source_url": "https://example.com/original-clip",
+      "permission_evidence": "Replace with written permission/licence evidence",
+      "approved": false,
+      "start_seconds": 0,
+      "duration_seconds": 12,
+      "moment_label": "Replace with a truthful moment description"
+    },
+    {
+      "id": "replace-with-unique-id-2",
+      "file": "assets/clips/approved_clip_2.mp4",
+      "streamer": "Streamer Name",
+      "source_url": "https://example.com/original-clip",
+      "permission_evidence": "Replace with written permission/licence evidence",
+      "approved": false,
+      "start_seconds": 0,
+      "duration_seconds": 12,
+      "moment_label": "Replace with a truthful moment description"
+    },
+    {
+      "id": "replace-with-unique-id-3",
+      "file": "assets/clips/approved_clip_3.mp4",
+      "streamer": "Streamer Name",
+      "source_url": "https://example.com/original-clip",
+      "permission_evidence": "Replace with written permission/licence evidence",
+      "approved": false,
+      "start_seconds": 0,
+      "duration_seconds": 12,
+      "moment_label": "Replace with a truthful moment description"
+    },
+    {
+      "id": "replace-with-unique-id-4",
+      "file": "assets/clips/approved_clip_4.mp4",
+      "streamer": "Streamer Name",
+      "source_url": "https://example.com/original-clip",
+      "permission_evidence": "Replace with written permission/licence evidence",
+      "approved": false,
+      "start_seconds": 0,
+      "duration_seconds": 12,
+      "moment_label": "Replace with a truthful moment description"
+    },
+    {
+      "id": "replace-with-unique-id-5",
+      "file": "assets/clips/approved_clip_5.mp4",
+      "streamer": "Streamer Name",
+      "source_url": "https://example.com/original-clip",
+      "permission_evidence": "Replace with written permission/licence evidence",
+      "approved": false,
+      "start_seconds": 0,
+      "duration_seconds": 12,
+      "moment_label": "Replace with a truthful moment description"
+    }
+  ]
+}
