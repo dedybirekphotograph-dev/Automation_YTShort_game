@@ -1,12 +1,13 @@
-name: Build and upload approved Gaming Short
+
+name: Discover and build Gaming Shorts
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 1 * * *"   # 08:00 WIB
-    - cron: "0 5 * * *"   # 12:00 WIB
-    - cron: "0 9 * * *"   # 16:00 WIB
-    - cron: "0 13 * * *"  # 20:00 WIB
+    - cron: "0 1 * * *"
+    - cron: "0 5 * * *"
+    - cron: "0 9 * * *"
+    - cron: "0 13 * * *"
 
 permissions:
   contents: read
@@ -16,18 +17,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-upload:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: Install FFmpeg
         run: |
@@ -35,19 +36,23 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Build and upload private Short
+      - name: Discover eligible gaming videos
         env:
-          YOUTUBE_TOKEN_JSON_B64: ${{ secrets.YOUTUBE_TOKEN_JSON_B64 }}
-          SCHEDULE_CRON: ${{ github.event.schedule }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python src/discover_trending.py
+
+      - name: Build approved clips
         run: python src/build_and_upload.py
 
-      - name: Keep build result for review
+      - name: Save MP4 results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gaming-shorts-log-${{ github.run_id }}
-          path: output/
-          if-no-files-found: ignore
-          retention-days: 2
+          name: gaming-shorts-${{ github.run_number }}
+          path: output/*.mp4
+          if-no-files-found: warn
+          retention-days: 7
