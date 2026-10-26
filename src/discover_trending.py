@@ -15,10 +15,13 @@ OUT = Path("output")
 OUT.mkdir(parents=True, exist_ok=True)
 
 DAYS_BACK = 30
-MAX_PER_STREAMER = 10
+MAX_RESULTS_PER_CHANNEL = 50
+MIN_DURATION_SECONDS = 30
+MAX_DURATION_SECONDS = 15 * 60
 REGION = "US"
 
-# Nama pencarian awal. Hasil channel harus diperiksa sebelum digunakan.
+# Nama awal untuk pencarian channel.
+# Hasil teratas belum tentu channel resmi; wajib diperiksa.
 STREAMERS = [
     "Kai Cenat",
     "IShowSpeed",
@@ -32,110 +35,159 @@ STREAMERS = [
     "moistcr1tikal",
 ]
 
+# Kata kunci untuk menemukan highlight yang sudah diedit.
+SEARCH_QUERY = (
+    "highlights|funny moments|gaming clips|clutch|"
+    "best moments|streamer reaction|insane moments"
+)
+
+GOOD_TERMS = [
+    "highlight", "highlights", "funny", "moments",
+    "clutch", "reaction", "clips", "insane",
+    "best moments", "rage", "fails", "crazy",
+    "plays", "streamer", "gaming",
+]
+
 BAD_TERMS = [
     "giveaway", "free robux", "24/7", "24 hours live",
     "nonstop live", "study music", "casino", "poker",
+    "full stream", "full vod", "full episode",
 ]
 
-GOOD_TERMS = [
-    "funny", "moments", "reaction", "clutch", "insane",
-    "best", "rage", "fails", "highlights", "crazy",
-    "stream", "gaming", "plays",
-]
+def api_get(resource, params):
+    query = dict(params)
+    query["key"] = API_KEY
 
-def youtube_api(resource, params):
-    params["key"] = API_KEY
     url = (
         "https://www.googleapis.com/youtube/v3/"
-        + resource + "?" + urlencode(params)
+        + resource + "?" + urlencode(query)
     )
+
     try:
-        with urlopen(url, timeout=25) as response:
+        with urlopen(url, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
-            f"YouTube API HTTP {exc.code}: {detail[:500]}"
+            f"YouTube API HTTP {exc.code}: {detail[:700]}"
         ) from exc
-    except URLError as exc:
+    except (URLError, TimeoutError) as exc:
         raise RuntimeError(f"Network error: {exc}") from exc
 
 def clean(value):
     return re.sub(r"\s+", " ", value or "").strip()
 
-def search_channel(name):
-    data = youtube_api("search", {
+def parse_duration(value):
+    """Convert ISO 8601 duration, such as PT4M32S, to seconds."""
+    match = re.fullmatch(
+        r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?",
+        value or "",
+    )
+    if not match:
+        return None
+
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+def find_channel(streamer):
+    data = api_get("search", {
         "part": "snippet",
         "type": "channel",
-        "q": name,
+        "q": streamer,
         "maxResults": 5,
         "regionCode": REGION,
     })
-    return data.get("items", [])
 
-def search_videos(channel_id, streamer, published_after):
-    data = youtube_api("search", {
+    items = data.get("items", [])
+    if not items:
+        return None
+
+    # Pilihan pertama hanya kandidat, bukan verifikasi resmi.
+    item = items[0]
+    channel_id = item.get("id", {}).get("channelId")
+    snippet = item.get("snippet", {})
+
+    if not channel_id:
+        return None
+
+    return {
+        "requested_streamer": streamer,
+        "channel_title": clean(snippet.get("title")),
+        "channel_id": channel_id,
+        "channel_url": (
+            f"https://www.youtube.com/channel/{channel_id}"
+        ),
+        "channel_identity_review": "NOT_VERIFIED",
+    }
+
+def find_highlights(channel_id, published_after):
+    data = api_get("search", {
         "part": "snippet",
         "type": "video",
         "channelId": channel_id,
+        "q": SEARCH_QUERY,
         "publishedAfter": published_after,
         "order": "date",
-        "maxResults": MAX_PER_STREAMER,
+        "maxResults": MAX_RESULTS_PER_CHANNEL,
         "videoCategoryId": "20",
         "regionCode": REGION,
         "safeSearch": "moderate",
     })
     return data.get("items", [])
 
+def fetch_video_details(video_ids):
+    details = {}
+
+    # videos.list costs much less quota than search.list.
+    for start in range(0, len(video_ids), 50):
+        batch = video_ids[start:start + 50]
+        if not batch:
+            continue
+
+        data = api_get("videos", {
+            "part": "statistics,contentDetails,snippet,status",
+            "id": ",".join(batch),
+            "maxResults": 50,
+        })
+
+        for item in data.get("items", []):
+            details[item["id"]] = item
+
+    return details
+
 def main():
     if not API_KEY:
-        print("ERROR: GitHub Secret YOUTUBE_API_KEY is missing.")
+        print("ERROR: Secret YOUTUBE_API_KEY is missing.")
         sys.exit(1)
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=DAYS_BACK)
     published_after = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    channels = []
     candidates = []
-    channels_found = []
-    seen_video_ids = set()
+    seen = set()
 
     for streamer in STREAMERS:
-        print(f"Searching channel: {streamer}")
+        print(f"Searching streamer: {streamer}")
 
         try:
-            channel_items = search_channel(streamer)
+            channel = find_channel(streamer)
         except Exception as exc:
-            print(f"Channel search failed for {streamer}: {exc}")
+            print(f"Channel search failed: {exc}")
             continue
 
-        if not channel_items:
-            print(f"No channel results for {streamer}")
+        if not channel:
+            print(f"No channel candidate found: {streamer}")
             continue
 
-        # Ambil kandidat channel teratas, tetapi jangan menganggapnya
-        # otomatis resmi. Simpan nama dan URL agar dapat diperiksa.
-        channel = channel_items[0]
-        channel_id = channel.get("id", {}).get("channelId")
-        snippet = channel.get("snippet", {})
-
-        if not channel_id:
-            continue
-
-        channel_title = clean(snippet.get("title"))
-        channel_url = f"https://www.youtube.com/channel/{channel_id}"
-
-        channels_found.append({
-            "requested_streamer": streamer,
-            "channel_title": channel_title,
-            "channel_id": channel_id,
-            "channel_url": channel_url,
-            "channel_identity_review": "NOT_VERIFIED",
-        })
+        channels.append(channel)
 
         try:
-            videos = search_videos(
-                channel_id, streamer, published_after
+            videos = find_highlights(
+                channel["channel_id"], published_after
             )
         except Exception as exc:
             print(f"Video search failed for {streamer}: {exc}")
@@ -143,94 +195,120 @@ def main():
 
         for item in videos:
             video_id = item.get("id", {}).get("videoId")
-            if not video_id or video_id in seen_video_ids:
+            snippet = item.get("snippet", {})
+
+            if not video_id or video_id in seen:
                 continue
 
-            video_snippet = item.get("snippet", {})
-            title = clean(video_snippet.get("title"))
+            title = clean(snippet.get("title"))
             title_lower = title.lower()
 
             if any(term in title_lower for term in BAD_TERMS):
                 continue
 
             if not any(term in title_lower for term in GOOD_TERMS):
-                # Simpan hanya judul yang berindikasi relevan.
                 continue
 
-            published_at = video_snippet.get("publishedAt", "")
+            published_at = snippet.get("publishedAt", "")
             try:
                 published_dt = datetime.fromisoformat(
                     published_at.replace("Z", "+00:00")
                 )
-                if published_dt < cutoff:
-                    continue
             except ValueError:
                 continue
 
-            seen_video_ids.add(video_id)
+            if published_dt < cutoff:
+                continue
+
+            seen.add(video_id)
             candidates.append({
                 "requested_streamer": streamer,
                 "channel_title": clean(
-                    video_snippet.get("channelTitle")
+                    snippet.get("channelTitle")
                 ),
-                "channel_id": video_snippet.get("channelId", ""),
+                "channel_id": snippet.get("channelId", ""),
                 "video_id": video_id,
                 "title": title,
                 "published_at": published_at,
-                "url": f"https://www.youtube.com/watch?v={video_id}",
-                "found_by": "famous_streamer_recent_search",
-                "permission_review": "NOT_VERIFIED",
+                "url": (
+                    f"https://www.youtube.com/watch?v={video_id}"
+                ),
+                "found_by": "famous_streamer_highlights",
+                "duration_seconds": "",
+                "duration": "",
+                "views": 0,
+                "likes": 0,
+                "views_per_day_estimate": 0,
                 "channel_identity_review": "NOT_VERIFIED",
+                "permission_review": "NOT_VERIFIED",
                 "downloaded": False,
                 "edited": False,
             })
 
-    # Ambil jumlah views untuk membantu menyusun prioritas.
-    for start in range(0, len(candidates), 50):
-        batch = candidates[start:start + 50]
-        ids = ",".join(row["video_id"] for row in batch)
-        if not ids:
-            continue
-
+    if candidates:
         try:
-            details = youtube_api("videos", {
-                "part": "statistics,contentDetails",
-                "id": ids,
-                "maxResults": 50,
-            })
-            by_id = {
-                item["id"]: item
-                for item in details.get("items", [])
-            }
-            for row in batch:
-                detail = by_id.get(row["video_id"], {})
-                stats = detail.get("statistics", {})
-                row["views"] = int(stats.get("viewCount", 0))
-                row["likes"] = int(stats.get("likeCount", 0))
-                row["duration"] = detail.get(
-                    "contentDetails", {}
-                ).get("duration", "")
-                age_days = max(
-                    1,
-                    (now - datetime.fromisoformat(
-                        row["published_at"].replace("Z", "+00:00")
-                    )).days,
-                )
-                row["views_per_day_estimate"] = round(
-                    row["views"] / age_days, 2
-                )
+            details = fetch_video_details([
+                row["video_id"] for row in candidates
+            ])
         except Exception as exc:
-            print(f"Statistics lookup failed: {exc}")
-            for row in batch:
-                row["views"] = 0
-                row["likes"] = 0
-                row["duration"] = ""
-                row["views_per_day_estimate"] = 0
+            print(f"Video details lookup failed: {exc}")
+            details = {}
 
+        filtered = []
+
+        for row in candidates:
+            item = details.get(row["video_id"], {})
+            content = item.get("contentDetails", {})
+            stats = item.get("statistics", {})
+
+            duration = content.get("duration", "")
+            seconds = parse_duration(duration)
+
+            # Reject videos outside the desired highlight length.
+            if seconds is None:
+                continue
+            if not (
+                MIN_DURATION_SECONDS
+                <= seconds
+                <= MAX_DURATION_SECONDS
+            ):
+                continue
+
+            # Skip videos marked private or unavailable.
+            status = item.get("status", {})
+            if status.get("privacyStatus") == "private":
+                continue
+
+            views = int(stats.get("viewCount", 0))
+            likes = int(stats.get("likeCount", 0))
+
+            try:
+                published_dt = datetime.fromisoformat(
+                    row["published_at"].replace("Z", "+00:00")
+                )
+                age_days = max(
+                    1, (now - published_dt).total_seconds() / 86400
+                )
+            except ValueError:
+                age_days = 1
+
+            row["duration"] = duration
+            row["duration_seconds"] = seconds
+            row["views"] = views
+            row["likes"] = likes
+            row["views_per_day_estimate"] = round(
+                views / age_days, 2
+            )
+
+            filtered.append(row)
+
+        candidates = filtered
+
+    # Rank by estimated views/day, then total views.
     candidates.sort(
         key=lambda row: (
-            row.get("views_per_day_estimate", 0),
-            row.get("views", 0),
+            row["views_per_day_estimate"],
+            row["views"],
         ),
         reverse=True,
     )
@@ -238,58 +316,57 @@ def main():
     report = {
         "generated_at": now.isoformat(),
         "recent_window_days": DAYS_BACK,
-        "mode": "DISCOVERY_ONLY_NO_DOWNLOAD",
-        "note": (
-            "Channel identity and reuse permission are unverified. "
-            "Verify the channel, video license, and reuse rights "
-            "before obtaining or editing any video."
+        "duration_range_seconds": [
+            MIN_DURATION_SECONDS,
+            MAX_DURATION_SECONDS,
+        ],
+        "mode": "DISCOVERY_ONLY_NO_DOWNLOAD_NO_EDIT",
+        "important_note": (
+            "Search results are candidates only. Verify channel "
+            "identity and reuse permission before using content. "
+            "This script does not download, edit, or upload videos."
         ),
-        "channels_found": channels_found,
+        "channels_to_review": channels,
         "candidates": candidates,
     }
 
-    json_path = OUT / "trending_candidates.json"
-    csv_path = OUT / "trending_candidates.csv"
-
-    json_path.write_text(
+    (OUT / "trending_candidates.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-    fields = [
+    video_fields = [
         "requested_streamer", "channel_title", "channel_id",
         "video_id", "title", "published_at", "url", "found_by",
-        "views", "likes", "duration", "views_per_day_estimate",
-        "channel_identity_review", "permission_review",
-        "downloaded", "edited",
+        "duration", "duration_seconds", "views", "likes",
+        "views_per_day_estimate", "channel_identity_review",
+        "permission_review", "downloaded", "edited",
     ]
 
-    with csv_path.open(
+    with (OUT / "trending_candidates.csv").open(
         "w", newline="", encoding="utf-8-sig"
     ) as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+        writer = csv.DictWriter(file, fieldnames=video_fields)
         writer.writeheader()
         writer.writerows(candidates)
 
-    channels_path = OUT / "channels_to_review.csv"
-    with channels_path.open(
+    channel_fields = [
+        "requested_streamer", "channel_title",
+        "channel_id", "channel_url", "channel_identity_review",
+    ]
+
+    with (OUT / "channels_to_review.csv").open(
         "w", newline="", encoding="utf-8-sig"
     ) as file:
-        fields_channels = [
-            "requested_streamer", "channel_title",
-            "channel_id", "channel_url",
-            "channel_identity_review",
-        ]
-        writer = csv.DictWriter(
-            file, fieldnames=fields_channels
-        )
+        writer = csv.DictWriter(file, fieldnames=channel_fields)
         writer.writeheader()
-        writer.writerows(channels_found)
+        writer.writerows(channels)
 
-    print(f"Channels found: {len(channels_found)}")
-    print(f"Video candidates: {len(candidates)}")
-    print(f"Saved report: {json_path}")
-    print(f"Saved channel review: {channels_path}")
+    print(f"Channels to review: {len(channels)}")
+    print(f"Highlight candidates: {len(candidates)}")
+    print(f"Saved: {OUT / 'trending_candidates.csv'}")
+    print(f"Saved: {OUT / 'trending_candidates.json'}")
+    print(f"Saved: {OUT / 'channels_to_review.csv'}")
 
 if __name__ == "__main__":
     main()
