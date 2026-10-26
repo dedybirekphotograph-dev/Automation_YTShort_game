@@ -1,0 +1,47 @@
+
+{
+  "channels": [
+    {
+      "name": "IShowSpeed",
+      "channel_id": "UCWsDFcIhY2DBi3GB5uykGXA",
+      "approved": false,
+      "permission_confirmed": false
+    },
+    {
+      "name": "xQc",
+      "channel_id": "UCmDTrq0LNgPodDOFZiSbsww",
+      "approved": false,
+      "permission_confirmed": false
+    },
+    {
+      "name": "Jynxzi",
+      "channel_id": "UCjiXtODGCCulmhwypZAWSag",
+      "approved": false,
+      "permission_confirmed": false
+    },
+    {
+      "name": "CaseOh",
+      "channel_id": "UC63anZxfVGHUEmfBAf5w7pw",
+      "approved": false,
+      "permission_confirmed": false
+    },
+    {
+      "name": "TheBurntPeanut",
+      "channel_id": "UCMNEVbszv8ZyvSXoTn3yhpQ",
+      "approved": false,
+      "permission_confirmed": false
+    },
+    {
+      "name": "Ninja",
+      "channel_id": "UCAW-NpUFkMyCNrvRSSGIvDQ",
+      "approved": false,
+      "permission_confirmed": false
+    },
+    {
+      "name": "Ludwig",
+      "channel_id": "UCrPseYLGpNygVi34QpGNqpA",
+      "approved": false,
+      "permission_confirmed": false
+    }
+  ]
+}
