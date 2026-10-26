@@ -33,6 +33,7 @@ BAD_TERMS = [
     "full vod", "full episode",
 ]
 
+
 def api_get(resource, params):
     query = dict(params)
     query["key"] = API_KEY
@@ -40,6 +41,7 @@ def api_get(resource, params):
         "https://www.googleapis.com/youtube/v3/"
         + resource + "?" + urlencode(query)
     )
+
     try:
         with urlopen(url, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -51,6 +53,7 @@ def api_get(resource, params):
     except URLError as exc:
         raise RuntimeError(f"Network error: {exc}") from exc
 
+
 def parse_duration(value):
     match = re.fullmatch(
         r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?",
@@ -58,31 +61,47 @@ def parse_duration(value):
     )
     if not match:
         return None
+
     return (
         int(match.group(1) or 0) * 3600
         + int(match.group(2) or 0) * 60
         + int(match.group(3) or 0)
     )
 
+
 def load_approved_channels():
     if not CHANNEL_FILE.exists():
-        raise RuntimeError(
-            f"Missing file: {CHANNEL_FILE}"
-        )
+        raise RuntimeError(f"Missing file: {CHANNEL_FILE}")
 
     data = json.loads(CHANNEL_FILE.read_text(encoding="utf-8"))
     channels = data.get("channels", [])
 
-    # Require both channel approval and confirmed reuse permission.
+    # Channel approval is only for discovery, not reuse permission.
     approved = [
-        c for c in channels
-        if c.get("approved") is True
-        and c.get("permission_confirmed") is True
-        and c.get("channel_id")
-        and c.get("name")
+        channel for channel in channels
+        if channel.get("approved") is True
+        and channel.get("channel_id")
+        and channel.get("name")
     ]
 
-    return approved
+    # Avoid searching the same channel ID more than once.
+    unique = []
+    seen_ids = set()
+
+    for channel in approved:
+        channel_id = channel["channel_id"].strip()
+        name = channel["name"].strip()
+
+        if not channel_id or not name or channel_id in seen_ids:
+            continue
+
+        channel["channel_id"] = channel_id
+        channel["name"] = name
+        unique.append(channel)
+        seen_ids.add(channel_id)
+
+    return unique
+
 
 def search_highlights(channel, published_after):
     data = api_get("search", {
@@ -96,8 +115,10 @@ def search_highlights(channel, published_after):
     })
     return data.get("items", [])
 
+
 def get_video_details(ids):
     result = {}
+
     for start in range(0, len(ids), 50):
         batch = ids[start:start + 50]
         if not batch:
@@ -108,9 +129,12 @@ def get_video_details(ids):
             "id": ",".join(batch),
             "maxResults": 50,
         })
+
         for item in data.get("items", []):
             result[item["id"]] = item
+
     return result
+
 
 def main():
     if not API_KEY:
@@ -120,8 +144,8 @@ def main():
 
     if not channels:
         print(
-            "No approved channels. Review assets/"
-            "approved_channels.json first."
+            "No channels with approved=true. Review "
+            "assets/approved_channels.json first."
         )
         print("No videos were searched.")
         return
@@ -135,15 +159,17 @@ def main():
 
     for channel in channels:
         print("Searching approved channel:", channel["name"])
+
         try:
             items = search_highlights(channel, after)
         except Exception as exc:
-            print("Search error:", exc)
+            print("Search error for", channel["name"], ":", exc)
             continue
 
         for item in items:
             video_id = item.get("id", {}).get("videoId")
             snippet = item.get("snippet", {})
+
             title = re.sub(
                 r"\s+", " ", snippet.get("title", "")
             ).strip()
@@ -151,22 +177,27 @@ def main():
 
             if not video_id or video_id in seen:
                 continue
+
             if any(term in lower for term in BAD_TERMS):
                 continue
+
             if not any(term in lower for term in GOOD_TERMS):
                 continue
 
             published = snippet.get("publishedAt", "")
+
             try:
                 date = datetime.fromisoformat(
                     published.replace("Z", "+00:00")
                 )
             except ValueError:
                 continue
+
             if date < cutoff:
                 continue
 
             seen.add(video_id)
+
             candidates.append({
                 "requested_streamer": channel["name"],
                 "channel_title": snippet.get("channelTitle", ""),
@@ -183,7 +214,7 @@ def main():
                 "likes": 0,
                 "views_per_day_estimate": 0,
                 "channel_identity_review": "MANUALLY_APPROVED",
-                "permission_review": "PERMISSION_RECORDED_CHECK_DETAILS",
+                "permission_review": "NOT_VERIFIED",
                 "downloaded": False,
                 "edited": False,
             })
@@ -193,19 +224,26 @@ def main():
     ]) if candidates else {}
 
     filtered = []
+
     for row in candidates:
         item = details.get(row["video_id"], {})
+
+        # Exclude videos that are no longer available in the API.
+        if not item:
+            continue
+
         seconds = parse_duration(
             item.get("contentDetails", {}).get("duration", "")
         )
+
         if seconds is None or not MIN_SECONDS <= seconds <= MAX_SECONDS:
             continue
 
-        # Reuse permission must still be checked for each specific video.
         row["duration"] = item.get(
             "contentDetails", {}
         ).get("duration", "")
         row["duration_seconds"] = seconds
+
         stats = item.get("statistics", {})
         row["views"] = int(stats.get("viewCount", 0))
         row["likes"] = int(stats.get("likeCount", 0))
@@ -223,11 +261,17 @@ def main():
         row["views_per_day_estimate"] = round(
             row["views"] / age_days, 2
         )
+
+        # Never infer reuse permission from channel approval.
+        row["permission_review"] = "NOT_VERIFIED"
+        row["downloaded"] = False
+        row["edited"] = False
+
         filtered.append(row)
 
     filtered.sort(
-        key=lambda r: (
-            r["views_per_day_estimate"], r["views"]
+        key=lambda row: (
+            row["views_per_day_estimate"], row["views"]
         ),
         reverse=True,
     )
@@ -237,11 +281,13 @@ def main():
         "mode": "DISCOVERY_ONLY_NO_DOWNLOAD_NO_EDIT",
         "recent_window_days": DAYS_BACK,
         "duration_range_seconds": [MIN_SECONDS, MAX_SECONDS],
-        "channels_searched": [c["name"] for c in channels],
+        "channels_searched": [channel["name"] for channel in channels],
         "candidates": filtered,
         "note": (
-            "Channel approval and video reuse permission are separate. "
-            "Permission evidence must be checked for each video. "
+            "Channel approval only permits discovery through this script. "
+            "It does not establish permission to reuse any video. "
+            "Check the rights and permission evidence for each specific "
+            "video before downloading, editing, or publishing it. "
             "This script does not download, edit, or upload videos."
         ),
     }
@@ -268,7 +314,10 @@ def main():
 
     print("Approved channels searched:", len(channels))
     print("Eligible highlight candidates:", len(filtered))
+    print("Permission status for all candidates: NOT_VERIFIED")
     print("Report:", OUT / "trending_candidates.csv")
+    print("JSON:", OUT / "trending_candidates.json")
+
 
 if __name__ == "__main__":
     try:
